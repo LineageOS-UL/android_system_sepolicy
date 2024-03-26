@@ -17,6 +17,7 @@ package selinux
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -48,6 +49,15 @@ type selinuxContextsProperties struct {
 	Recovery_available *bool
 }
 
+type fileContextsProperties struct {
+	// flatten_apex can be used to specify additional sources of file_contexts.
+	// Apex paths, /system/apex/{apex_name}, will be amended to the paths of file_contexts
+	// entries.
+	Flatten_apex struct {
+		Srcs []string `android:"path"`
+	}
+}
+
 type seappProperties struct {
 	// Files containing neverallow rules.
 	Neverallow_files []string `android:"path"`
@@ -61,12 +71,13 @@ type selinuxContextsModule struct {
 	android.DefaultableModuleBase
 	flaggableModuleBase
 
-	properties      selinuxContextsProperties
-	seappProperties seappProperties
-	build           func(ctx android.ModuleContext, inputs android.Paths) android.Path
-	deps            func(ctx android.BottomUpMutatorContext)
-	outputPath      android.Path
-	installPath     android.InstallPath
+	properties             selinuxContextsProperties
+	fileContextsProperties fileContextsProperties
+	seappProperties        seappProperties
+	build                  func(ctx android.ModuleContext, inputs android.Paths) android.Path
+	deps                   func(ctx android.BottomUpMutatorContext)
+	outputPath             android.Path
+	installPath            android.InstallPath
 }
 
 var _ flaggableModule = (*selinuxContextsModule)(nil)
@@ -157,6 +168,7 @@ func newModule() *selinuxContextsModule {
 	m := &selinuxContextsModule{}
 	m.AddProperties(
 		&m.properties,
+		&m.fileContextsProperties,
 		&m.seappProperties,
 	)
 	initFlaggableModule(m)
@@ -320,6 +332,26 @@ func (m *selinuxContextsModule) buildFileContexts(ctx android.ModuleContext, inp
 	if m.properties.Remove_comment == nil {
 		m.properties.Remove_comment = proptools.BoolPtr(true)
 	}
+
+	rule := android.NewRuleBuilder(pctx, ctx)
+
+	if ctx.Config().FlattenApex() {
+		for _, path := range android.PathsForModuleSrc(ctx, m.fileContextsProperties.Flatten_apex.Srcs) {
+			out := pathForModuleOut(ctx, "flattened_apex", path.Rel())
+			apex_path := "/system/apex/" + strings.Replace(
+				strings.TrimSuffix(path.Base(), "-file_contexts"),
+				".", "\\\\.", -1)
+
+			rule.Command().
+				Text("awk '/object_r/{printf(\""+apex_path+"%s\\n\",$0)}'").
+				Input(path).
+				FlagWithOutput("> ", out)
+
+			inputs = append(inputs, out)
+		}
+	}
+
+	rule.Build(m.Name(), "flattened_apex_file_contexts")
 	return m.buildGeneralContexts(ctx, inputs)
 }
 
